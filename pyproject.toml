@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tool-using-research-agent"
+version = "1.0.0"
+description = "A bounded, tool using web research agent with source validated citations."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "AgenticX project submission"}]
+dependencies = [
+  "openai>=1.55.0,<3",
+]
+
+[project.scripts]
+research_agent = "research_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
