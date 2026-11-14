@@ -10,3 +10,12 @@ venv/
 dist/
 build/
 run_output/
+
+# Local credentials and generated runtime files
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+node_modules/
+*.pyc
