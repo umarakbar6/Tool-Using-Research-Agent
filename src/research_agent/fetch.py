@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from http.client import HTTPConnection, HTTPSConnection
 from html.parser import HTMLParser
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .models import FetchedPage
 
@@ -27,6 +28,64 @@ class FetchError(RuntimeError):
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
         return None
+
+
+def _public_addresses(host: str, port: int):
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise FetchError("dns_failure", "Could not resolve the page hostname.") from exc
+    if not addresses:
+        raise FetchError("dns_failure", "The page hostname had no addresses.")
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if not ip.is_global or (mapped is not None and not mapped.is_global):
+            raise FetchError("private_network_blocked", "The URL resolves to a non public address.", retryable=False)
+    return addresses
+
+
+def _connect_public(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    # Use the exact checked numeric address; a second DNS lookup permits rebinding.
+    host, port = address
+    addresses = _public_addresses(host, port)
+    last_error = None
+    for family, kind, protocol, _, sockaddr in addresses:
+        connection = socket.socket(family, kind, protocol)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                connection.settimeout(timeout)
+            if source_address:
+                connection.bind(source_address)
+            connection.connect(sockaddr)
+            return connection
+        except OSError as exc:
+            last_error = exc
+            connection.close()
+    raise last_error or OSError("Could not connect to the public page.")
+
+
+class _PublicHTTPConnection(HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect_public
+
+
+class _PublicHTTPSConnection(HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect_public
+
+
+class _PublicHTTPHandler(HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PublicHTTPConnection, req)
+
+
+class _PublicHTTPSHandler(HTTPSHandler):
+    def https_open(self, req):
+        # Preserve original-host SNI and normal TLS certificate verification.
+        return self.do_open(_PublicHTTPSConnection, req, context=self._context)
 
 
 class _VisibleTextParser(HTMLParser):
@@ -86,30 +145,11 @@ def validate_public_url(url: str) -> None:
         raise FetchError("invalid_url", "The URL has no hostname.", retryable=False)
     if parts.username or parts.password:
         raise FetchError("credentials_not_allowed", "URLs containing credentials are rejected.", retryable=False)
-
     try:
         port = parts.port or (443 if parts.scheme == "https" else 80)
-        addresses = socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise FetchError("dns_failure", f"Could not resolve {parts.hostname}.") from exc
-
-    for address in addresses:
-        ip = ipaddress.ip_address(address[4][0])
-        if any(
-            (
-                ip.is_private,
-                ip.is_loopback,
-                ip.is_link_local,
-                ip.is_multicast,
-                ip.is_reserved,
-                ip.is_unspecified,
-            )
-        ):
-            raise FetchError(
-                "private_network_blocked",
-                f"The URL resolves to a non public address ({ip}).",
-                retryable=False,
-            )
+    except ValueError as exc:
+        raise FetchError("invalid_url", "The URL has an invalid port.", retryable=False) from exc
+    _public_addresses(parts.hostname, port)
 
 
 class SafePageFetcher:
@@ -125,7 +165,7 @@ class SafePageFetcher:
         self.max_bytes = max_bytes
         self.max_chars = max_chars
         self.max_redirects = max_redirects
-        self._opener = build_opener(_NoRedirect())
+        self._opener = build_opener(ProxyHandler({}), _NoRedirect(), _PublicHTTPHandler(), _PublicHTTPSHandler())
 
     def fetch(self, url: str) -> FetchedPage:
         current = url

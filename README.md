@@ -228,3 +228,7 @@ The planning prompt states that instructions found inside web pages are data, no
 ## License
 
 MIT
+
+## Fetch security
+
+Page downloads validate public DNS answers at connection time and connect to the checked numeric address. TLS verifies the original hostname. Private, shared, loopback, link-local and mixed public/private DNS answers are rejected on every redirect. Ambient HTTP proxy settings are not used because they move DNS and routing decisions outside that boundary.
