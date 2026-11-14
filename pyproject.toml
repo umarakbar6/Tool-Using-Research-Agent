@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "AgenticX project submission"}]
 dependencies = [
-  "openai>=1.55.0,<3",
+  "openai>=1.55.0,<4",
 ]
 
 [project.scripts]
